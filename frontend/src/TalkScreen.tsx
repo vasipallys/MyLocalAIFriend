@@ -56,8 +56,18 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
     audioContextRef.current?.close().catch(() => undefined); audioContextRef.current = null
   }
 
+  function stopAgentAudio() {
+    const audio = audioRef.current
+    audioRef.current = null
+    if (audio) {
+      audio.onplay = null; audio.onended = null; audio.onerror = null
+      audio.pause(); audio.currentTime = 0; audio.removeAttribute('src'); audio.load()
+    }
+    stopAudioAnalysis(); setSubtitleWord(0)
+  }
+
   function playAgentAudio(url: string) {
-    stopAudioAnalysis()
+    stopAgentAudio()
     const audio = new Audio(API + url); audio.crossOrigin = 'anonymous'; audioRef.current = audio
     const context = new AudioContext(); audioContextRef.current = context
     const source = context.createMediaElementSource(audio); const analyser = context.createAnalyser()
@@ -77,8 +87,8 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
       if (!audio.paused && !audio.ended) audioFrameRef.current = requestAnimationFrame(animate)
     }
     audio.onplay = () => { setState('speaking'); audioFrameRef.current = requestAnimationFrame(animate) }
-    audio.onended = () => { stopAudioAnalysis(); setSubtitleWord(words.length); setState('idle'); setStatus('Ready when you are') }
-    audio.onerror = () => { stopAudioAnalysis(); setError('The generated voice audio could not be played.') }
+    audio.onended = () => { audioRef.current = null; stopAudioAnalysis(); setSubtitleWord(words.length); setState('idle'); setStatus('Ready when you are') }
+    audio.onerror = () => { audioRef.current = null; stopAudioAnalysis(); setError('The generated voice audio could not be played.') }
     context.resume().then(() => audio.play()).catch(e => setError(`Audio playback failed: ${e.message}`))
   }
 
@@ -93,7 +103,7 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
       const data = JSON.parse(event.data)
       if (data.type === 'state') {
         if (!(data.value === 'idle' && audioRef.current && !audioRef.current.paused)) setState(data.value)
-        if (data.value === 'thinking') setStatus('Gemma is thinking locally…')
+        if (data.value === 'thinking') { stopAgentAudio(); setStatus('Gemma is thinking locally…') }
       }
       if (data.type === 'status') setStatus(data.content)
       if (data.type === 'transcript') { setTranscript(data.content); setResponse(''); responseRef.current = '' }
@@ -117,11 +127,11 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
       }
     }
     connect()
-    return () => { disposed = true; if (retryTimer) window.clearTimeout(retryTimer); recorderRef.current?.stop(); audioRef.current?.pause(); stopAudioAnalysis(); socketRef.current?.close(); socketRef.current = null }
+    return () => { disposed = true; if (retryTimer) window.clearTimeout(retryTimer); recorderRef.current?.stop(); stopAgentAudio(); socketRef.current?.close(); socketRef.current = null }
   }, [])
 
   async function beginListening() {
-    setError(''); setVideoUrl('')
+    stopAgentAudio(); setError(''); setVideoUrl('')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm'
@@ -155,11 +165,12 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   }
   function submitText(event: FormEvent) {
     event.preventDefault(); const content = text.trim(); if (!content || socketRef.current?.readyState !== WebSocket.OPEN) return
+    stopAgentAudio()
     const attachmentIds = attachments.map(item => item.id)
     setText(''); setAttachments([]); setTranscript(content); setResponse(''); responseRef.current = ''; setError(''); setVideoUrl(''); setImageUrl(''); setState('thinking')
     socketRef.current.send(JSON.stringify({ type: 'text', content, mode, attachment_ids: attachmentIds }))
   }
-  function reset() { setTranscript(''); setResponse(''); setVideoUrl(''); setImageUrl(''); setAttachments([]); setError(''); socketRef.current?.send(JSON.stringify({ type: 'reset' })) }
+  function reset() { stopAgentAudio(); setTranscript(''); setResponse(''); setVideoUrl(''); setImageUrl(''); setAttachments([]); setError(''); socketRef.current?.send(JSON.stringify({ type: 'reset' })) }
 
   return <div className="talk-screen">
     <header className="talk-header"><button onClick={onHome}><ArrowLeft size={18}/> Home</button><div><Sparkles size={18}/><b>Talk with Gemma</b><span>Local voice companion</span></div><button onClick={reset}><RotateCcw size={16}/> Reset</button></header>
