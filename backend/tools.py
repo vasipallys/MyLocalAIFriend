@@ -36,8 +36,15 @@ async def web_search(query: str, limit: int = 5) -> list[dict]:
     """
     from ddgs import DDGS
 
+    lowered = query.lower()
+    freshness = "m" if any(
+        term in lowered
+        for term in ("latest", "today", "current", "recent", "news", "this week", "this month")
+    ) else None
     raw = await asyncio.wait_for(
-        asyncio.to_thread(lambda: list(DDGS().text(query, max_results=limit))),
+        asyncio.to_thread(
+            lambda: list(DDGS().text(query, max_results=limit, timelimit=freshness))
+        ),
         timeout=30,
     )
 

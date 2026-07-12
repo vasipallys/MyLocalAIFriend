@@ -4,6 +4,14 @@ import { API } from './api'
 
 type AgentState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'error'
 
+function LinkedText({ text }: { text: string }) {
+  return <>{text.split(/(https?:\/\/[^\s)]+)/g).map((part, index) =>
+    part.startsWith('http')
+      ? <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>
+      : part
+  )}</>
+}
+
 export function TalkScreen({ onHome }: { onHome: () => void }) {
   const [state, setState] = useState<AgentState>('connecting')
   const [transcript, setTranscript] = useState('')
@@ -84,7 +92,7 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
         <button className={`talk-button ${state === 'listening' ? 'recording' : ''}`} disabled={!['idle','listening','error'].includes(state)} onClick={state === 'listening' ? stopListening : beginListening}>{state === 'listening' ? <Square size={21}/> : <Mic size={23}/>}<span>{state === 'listening' ? 'Finish' : 'Talk'}</span></button>
       </section>
       <section className="talk-dialogue">
-        {(transcript || response) && <div className="voice-conversation">{transcript && <div className="voice-turn user-turn"><small>YOU SAID</small><p>{transcript}</p></div>}{response && <div className="voice-turn agent-turn"><small>GEMMA</small><p>{response}</p></div>}</div>}
+        {(transcript || response) && <div className="voice-conversation">{transcript && <div className="voice-turn user-turn"><small>YOU SAID</small><p>{transcript}</p></div>}{response && <div className="voice-turn agent-turn"><small>GEMMA</small><p><LinkedText text={response}/></p></div>}</div>}
         {videoUrl && <div className="visual-player"><div><Video size={16}/> Visual explanation</div><video src={videoUrl} controls autoPlay/></div>}
         {error && <div className="talk-error">{error}</div>}
       </section>
@@ -92,4 +100,3 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
     <form className="talk-text" onSubmit={submitText}><input value={text} onChange={e => setText(e.target.value)} placeholder="Or type something to Gemma…" disabled={state === 'thinking'}/><button disabled={!text.trim() || state === 'thinking'}><Send size={17}/></button></form>
   </div>
 }
-

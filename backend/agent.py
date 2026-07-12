@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -78,7 +79,12 @@ class ChatAgent:
             return {"messages": [AIMessage(content=f"Image generation failed: {exc}")]}
 
     async def _respond(self, state: AgentState) -> dict:
-        prompt = SYSTEM_PROMPT
+        current = datetime.now().astimezone()
+        prompt = (
+            SYSTEM_PROMPT
+            + f"\nCurrent local date and time: {current.strftime('%A, %B %d, %Y, %I:%M %p %Z')}."
+            + " Never infer the current date from model training data."
+        )
         if state["mode"] == "code":
             prompt += "\nYou are in code mode. Prefer production-quality, tested code."
         context = "\n\n".join(x for x in (state.get("attachment_context"), state.get("tool_context")) if x)
