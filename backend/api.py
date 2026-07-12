@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,17 +15,24 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel import Session, select
 
 from backend.agent import ChatAgent
+from backend.agent_graph import TalkAgentGraph
+from backend.animation_engine import AnimationEngine
 from backend.config import get_settings
 from backend.db import Conversation, Message, create_conversation, engine, init_db, list_messages, now
 from backend.model import GemmaRuntime
 from backend.observability import configure_observability
 from backend.schemas import ChatRequest, RenameRequest
 from backend.tools import extract_document
+from backend.voice_engine import VoiceEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 settings = get_settings()
 runtime = GemmaRuntime(settings)
 agent = ChatAgent(runtime, settings)
+talk_agent = TalkAgentGraph(runtime, settings)
+voice_engine = VoiceEngine(settings)
+animation_engine = AnimationEngine(settings)
 
 
 @asynccontextmanager
@@ -182,3 +189,101 @@ async def chat(payload: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.websocket("/api/talk/ws")
+async def talk_socket(websocket: WebSocket):
+    await websocket.accept()
+    audio_buffer = bytearray()
+    history: list = []
+    preferences: dict[str, str] = {}
+
+    async def send(event_type: str, **data):
+        await websocket.send_json({"type": event_type, **data})
+
+    async def respond(transcript: str):
+        nonlocal history
+        if not transcript.strip():
+            await send("error", message="I could not hear any speech. Please try again.")
+            await send("state", value="idle")
+            return
+        await send("transcript", content=transcript)
+        await send("state", value="thinking")
+        token_queue: asyncio.Queue[str] = asyncio.Queue()
+        generation = asyncio.create_task(
+            talk_agent.invoke(history, transcript, preferences, token_queue)
+        )
+        while not generation.done() or not token_queue.empty():
+            try:
+                token = await asyncio.wait_for(token_queue.get(), timeout=1)
+                await send("token", content=token)
+            except TimeoutError:
+                await send("heartbeat")
+        result = await generation
+        response = result["response"]
+        history = list(result["messages"])[-settings.model_context_messages:]
+        await send("text_complete", content=response)
+        await send("state", value="speaking")
+
+        tts_task = asyncio.create_task(voice_engine.synthesize(response))
+        animation_task = None
+        if result["requires_animation"]:
+            await send("animation_state", value="rendering")
+            animation_task = asyncio.create_task(
+                animation_engine.render(transcript[:60], response)
+            )
+        try:
+            audio_url = await tts_task
+            await send("audio_ready", url=audio_url)
+        except Exception as exc:
+            logger.warning("Talk TTS failed: %s", exc)
+            await send("media_warning", message=str(exc))
+        if animation_task:
+            try:
+                video_url = await animation_task
+                await send("video_ready", url=video_url)
+            except Exception as exc:
+                logger.warning("Talk animation failed: %s", exc)
+                await send("media_warning", message=str(exc))
+        await send("state", value="idle")
+
+    try:
+        await send("state", value="idle")
+        while True:
+            message = await websocket.receive()
+            if message.get("bytes") is not None:
+                audio_buffer.extend(message["bytes"])
+                continue
+            raw = message.get("text")
+            if raw is None:
+                continue
+            command = json.loads(raw)
+            if command.get("type") == "text":
+                await respond(str(command.get("content", "")))
+            elif command.get("type") == "commit":
+                if not audio_buffer:
+                    await send("error", message="No microphone audio was received")
+                    continue
+                suffix = ".webm" if "webm" in command.get("mime", "") else ".wav"
+                path = settings.uploads_dir / f"voice-{uuid4()}{suffix}"
+                path.write_bytes(audio_buffer)
+                audio_buffer.clear()
+                await send("state", value="thinking")
+                await send("status", content="Transcribing locally with Whisper…")
+                try:
+                    transcript = await voice_engine.transcribe(path)
+                    await respond(transcript)
+                finally:
+                    path.unlink(missing_ok=True)
+            elif command.get("type") == "reset":
+                history = []
+                await send("reset_complete")
+    except WebSocketDisconnect:
+        logger.info("Talk client disconnected")
+    except Exception as exc:
+        logger.exception("Talk session failed")
+        try:
+            await send("error", message=str(exc))
+            await send("state", value="error")
+        except Exception:
+            pass

@@ -3,7 +3,13 @@
 A local-first desktop AI workspace powered by **Gemma 3 1B**, LangGraph, Phoenix, FastAPI, React, and Electron. It supports private chat, code generation, document analysis, cited web research, optional image generation, persistent conversation history, and server-sent response streaming.
 
 The default configuration is deliberately tuned for a CPU laptop. The language model runs locally; only Hugging Face model download and explicit web-research requests use the network.
+![alt text](image-4.png)
+![alt text](image.png)
 
+![alt text](image-1.png)
+![alt text](image-2.png)
+
+![alt text](image-3.png)
 ## CPU requirements
 
 - Windows 10/11, macOS, or Linux
@@ -45,6 +51,24 @@ npm run dev
 ```
 
 The first prompt triggers the model download. The API docs are at [http://127.0.0.1:8765/docs](http://127.0.0.1:8765/docs).
+
+## Talk mode
+
+The home screen offers **Chat** and **Talk**. Chat opens the existing workspace. Talk opens a real-time voice companion with an animated Idle/Listening/Thinking/Speaking avatar, streamed Gemma replies, local speech recognition, local voice playback, and optional Manim videos for visual explanations.
+
+Install the voice runtime:
+
+```powershell
+venv\Scripts\python.exe -m pip install -e ".[voice]"
+```
+
+For generated visual explanations, install [FFmpeg](https://ffmpeg.org/) and Manim's Windows prerequisites, then run:
+
+```powershell
+venv\Scripts\python.exe -m pip install -e ".[visual]"
+```
+
+Talk uses `faster-whisper` with the CPU `int8` profile and the operating system's offline speech engine through `pyttsx3`. Models load lazily on the first voice request. Typed Talk messages work even when microphone dependencies are not installed. Manim runs in a separate subprocess and TTS/STT run outside the FastAPI event loop.
 
 If Hugging Face returns `403 Cannot access gated repo`, the token is valid but its account has not accepted the Gemma license. Accept access on the model page, restart the backend, and retry. Creating a different token without accepting the license will not resolve it.
 

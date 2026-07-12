@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron')
+const { app, BrowserWindow, session, shell } = require('electron')
 const path = require('path')
 
 const isDev = !app.isPackaged
@@ -20,6 +20,11 @@ function createWindow() {
   else window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
 }
 
-app.whenReady().then(() => { createWindow(); app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow() }) })
+app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'media')
+  })
+  createWindow()
+  app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow() })
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-

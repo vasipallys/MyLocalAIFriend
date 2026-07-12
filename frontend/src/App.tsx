@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, Code2, FileText, Globe2, Image, Menu, MessageSquare, Paperclip, Plus, Search, Send, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { Bot, Code2, FileText, Globe2, Home, Image, Menu, MessageSquare, Paperclip, Plus, Search, Send, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { marked } from 'marked'
 import { api, API } from './api'
 import type { Attachment, Conversation, Message, Mode } from './types'
@@ -10,7 +10,7 @@ const modes: { id: Mode; label: string; icon: typeof Bot }[] = [
   { id: 'image', label: 'Image', icon: Image }, { id: 'document', label: 'Document', icon: FileText },
 ]
 
-export function App() {
+export function App({ onHome }: { onHome?: () => void }) {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeId, setActiveId] = useState<string>()
   const [messages, setMessages] = useState<Message[]>([])
@@ -64,13 +64,14 @@ export function App() {
   return <div className="shell">
     <aside className={sidebar ? 'sidebar' : 'sidebar closed'}>
       <div className="brand"><div className="brand-mark"><Sparkles size={18}/></div><span>Gemma Studio</span><button className="icon" onClick={() => setSidebar(false)}><X size={18}/></button></div>
+      {onHome && <button className="home-nav" onClick={onHome}><Home size={17}/> Home</button>}
       <button className="new-chat" onClick={createChat}><Plus size={17}/> New chat</button>
       <div className="search"><Search size={15}/><input placeholder="Search conversations" value={query} onChange={e => setQuery(e.target.value)}/></div>
       <div className="history"><div className="section-label">Recent</div>{filtered.map(chat => <button key={chat.id} className={`history-item ${activeId === chat.id ? 'active' : ''}`} onClick={() => setActiveId(chat.id)}><MessageSquare size={15}/><span>{chat.title}</span><i onClick={e => { e.stopPropagation(); removeChat(chat.id) }}><Trash2 size={14}/></i></button>)}</div>
       <div className="local-badge"><span className="pulse"/><div><b>Local workspace</b><small>Private on your machine</small></div></div>
     </aside>
     <main>
-      <header><button className="icon" onClick={() => setSidebar(!sidebar)}><Menu size={19}/></button><div className="model"><b>Gemma 3 1B</b><span>CPU · Local</span></div><div className="header-spacer"/><div className="status"><span/> API</div></header>
+      <header><button className="icon" onClick={() => setSidebar(!sidebar)}><Menu size={19}/></button>{onHome && <button className="icon" title="Home" onClick={onHome}><Home size={18}/></button>}<div className="model"><b>Gemma 3 1B</b><span>CPU · Local</span></div><div className="header-spacer"/><div className="status"><span/> API</div></header>
       <section className="conversation">
         {!messages.length ? <div className="welcome"><div className="orb"><Sparkles size={31}/></div><h1>What can I help you build?</h1><p>Chat privately with Gemma, write production code, research the web, analyze documents, or generate images.</p><div className="suggestions">{[
           ['Build an API', 'Create a FastAPI service with authentication', Code2], ['Analyze a document', 'Summarize and extract key findings', FileText],

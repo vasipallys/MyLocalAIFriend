@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     model_context_messages: int = 12
     cpu_threads: int = 0
     document_max_chars: int = 24_000
+    whisper_model: str = "base.en"
+    whisper_compute_type: str = "int8"
+    tts_rate: int = 175
+    manim_executable: str = "manim"
     temperature: float = 0.2
 
     image_model_id: str | None = None
