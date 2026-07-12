@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Mic, RotateCcw, Send, Sparkles, Square, Video } from 'lucide-react'
 import { API } from './api'
-import angelFriend from './assets/angel-friend.png'
+import robotGirl from './assets/robot-girl.png'
 
 type AgentState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'error'
 
@@ -15,7 +15,7 @@ function LinkedText({ text }: { text: string }) {
 
 function GeometricAgentFace({ mouthOpen, speaking }: { mouthOpen: number; speaking: boolean }) {
   return <div className={`agent-portrait ${speaking ? 'portrait-speaking' : ''}`} role="img" aria-label="Gemma, your angelic voice companion">
-    <img src={angelFriend} alt="Gemma angelic companion" draggable={false}/>
+    <img src={robotGirl} alt="Gemma feminine robotic companion" draggable={false}/>
     <span className="portrait-mouth" style={{ transform: `translate(-50%,-50%) scale(${1 + mouthOpen * .12},${.18 + mouthOpen * 1.3})`, opacity: .2 + mouthOpen * .75 }}/>
     <span className="portrait-halo"/>
   </div>
