@@ -1,7 +1,9 @@
 import asyncio
-import json
+import ipaddress
 import re
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -26,32 +28,62 @@ def extract_document(path: Path, max_chars: int = 80_000) -> str:
     return text[:max_chars]
 
 
-async def web_search(query: str, settings: Settings, limit: int = 5) -> list[dict]:
-    if settings.tavily_api_key:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                "https://api.tavily.com/search",
-                json={"api_key": settings.tavily_api_key, "query": query, "max_results": limit},
-            )
-            response.raise_for_status()
-            return response.json().get("results", [])
+async def web_search(query: str, limit: int = 5) -> list[dict]:
+    """API-key-free search and retrieval using local Python libraries.
+
+    DDGS discovers sources; HTTPX and BeautifulSoup retrieve and clean their content.
+    The network is still required because the underlying sources are public websites.
+    """
     from ddgs import DDGS
 
-    return await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=limit)))
+    raw = await asyncio.wait_for(
+        asyncio.to_thread(lambda: list(DDGS().text(query, max_results=limit))),
+        timeout=30,
+    )
+
+    async def enrich(item: dict) -> dict:
+        url = item.get("href") or item.get("url") or ""
+        result = {
+            "title": item.get("title") or "Search result",
+            "url": url,
+            "content": item.get("body") or item.get("content") or "",
+        }
+        if url:
+            try:
+                page = await fetch_page(url)
+                if page:
+                    result["content"] = page
+            except Exception:
+                # Search snippets remain useful when a site blocks automated retrieval.
+                pass
+        return result
+
+    return list(await asyncio.gather(*(enrich(item) for item in raw)))
 
 
 async def fetch_page(url: str) -> str:
     if not re.match(r"^https?://", url):
         raise ValueError("Only http(s) URLs are allowed")
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise ValueError("URL hostname is required")
+    addresses = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, None)
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError("Private and local network addresses are not allowed")
     async with httpx.AsyncClient(
         timeout=20, follow_redirects=True, headers={"User-Agent": "GemmaStudio/0.1"}
     ) as client:
         response = await client.get(url)
         response.raise_for_status()
+    content_type = response.headers.get("content-type", "")
+    if "text/html" not in content_type and "text/plain" not in content_type:
+        return ""
     soup = BeautifulSoup(response.text, "html.parser")
     for node in soup(["script", "style", "nav", "footer"]):
         node.decompose()
-    return " ".join(soup.get_text(" ", strip=True).split())[:25_000]
+    return " ".join(soup.get_text(" ", strip=True).split())[:3_000]
 
 
 async def generate_image(prompt: str, settings: Settings) -> str:
@@ -81,4 +113,3 @@ def research_context(results: list[dict]) -> str:
         f"Summary: {item.get('content') or item.get('body', '')}"
         for index, item in enumerate(results, 1)
     )
-

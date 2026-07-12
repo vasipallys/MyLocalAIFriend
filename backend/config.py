@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     document_max_chars: int = 24_000
     temperature: float = 0.2
 
-    tavily_api_key: str | None = None
     image_model_id: str | None = None
     phoenix_enabled: bool = True
     phoenix_collector_endpoint: str = "http://127.0.0.1:6006/v1/traces"

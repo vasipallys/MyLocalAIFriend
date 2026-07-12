@@ -68,7 +68,7 @@ CPU_THREADS=0
 
 - **Chat and code:** local Gemma inference with production-oriented prompting.
 - **Documents:** PDF, DOCX, text, Markdown, source code, JSON, and CSV up to 25 MB. Extracted text is capped before prompting to keep CPU inference manageable.
-- **Research:** Tavily when `TAVILY_API_KEY` is set, with DuckDuckGo search as the fallback. Research is the only agent mode that deliberately accesses the public web.
+- **Research:** API-key-free pipeline using DDGS for discovery, HTTPX for concurrent retrieval, and BeautifulSoup for local content extraction. Research is the only agent mode that deliberately accesses the public web.
 - **Images:** optional local Diffusers pipeline. Install with `pip install -e ".[image]"` and set `IMAGE_MODEL_ID`; a GPU is strongly recommended.
 - **Observability:** traces FastAPI requests, LangGraph/LangChain nodes, HTTP calls, tools, and local Gemma generation to a local Phoenix collector. Start it with `scripts\start-phoenix.ps1`; the application continues normally if it is absent.
 

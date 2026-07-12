@@ -63,7 +63,7 @@ class ChatAgent:
 
     async def _research(self, state: AgentState) -> dict:
         query = str(state["messages"][-1].content)
-        results = await web_search(query, self.settings)
+        results = await web_search(query)
         return {"tool_context": "WEB RESEARCH RESULTS:\n" + research_context(results)}
 
     async def _image(self, state: AgentState) -> dict:
