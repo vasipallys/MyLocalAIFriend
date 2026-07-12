@@ -1,9 +1,15 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Mic, RotateCcw, Send, Sparkles, Square, Video } from 'lucide-react'
-import { API } from './api'
-import { AngelAvatar } from './AngelAvatar'
+import { ArrowLeft, Code2, FileText, Globe2, Image, MessageSquare, Mic, Paperclip, RotateCcw, Send, Sparkles, Square, Video, X } from 'lucide-react'
+import { api, API } from './api'
+import type { Attachment, Mode } from './types'
+import robotGirl from './assets/robot-girl.png'
 
 type AgentState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'error'
+const modes: { id: Mode; label: string; icon: typeof Sparkles }[] = [
+  { id: 'auto', label: 'Auto', icon: Sparkles }, { id: 'chat', label: 'Chat', icon: MessageSquare },
+  { id: 'code', label: 'Code', icon: Code2 }, { id: 'research', label: 'Research', icon: Globe2 },
+  { id: 'image', label: 'Image', icon: Image }, { id: 'document', label: 'Document', icon: FileText },
+]
 
 function LinkedText({ text }: { text: string }) {
   return <>{text.split(/(https?:\/\/[^\s)]+)/g).map((part, index) =>
@@ -11,6 +17,14 @@ function LinkedText({ text }: { text: string }) {
       ? <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>
       : part
   )}</>
+}
+
+function GeometricAgentFace({ mouthOpen, speaking }: { mouthOpen: number; speaking: boolean }) {
+  return <div className={`agent-portrait ${speaking ? 'portrait-speaking' : ''}`} role="img" aria-label="Gemma, your angelic voice companion">
+    <img src={robotGirl} alt="Gemma feminine robotic companion" draggable={false}/>
+    <span className="portrait-mouth" style={{ transform: `translate(-50%,-50%) scale(${1 + mouthOpen * .12},${.18 + mouthOpen * 1.3})`, opacity: .2 + mouthOpen * .75 }}/>
+    <span className="portrait-halo"/>
+  </div>
 }
 
 export function TalkScreen({ onHome }: { onHome: () => void }) {
@@ -21,7 +35,11 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   const [error, setError] = useState('')
   const [videoUrl, setVideoUrl] = useState('')
   const [text, setText] = useState('')
-  const [mouth, setMouth] = useState({ open: 0, wide: .35 })
+  const [mode, setMode] = useState<Mode>('auto')
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [imageUrl, setImageUrl] = useState('')
+  const [mouthOpen, setMouthOpen] = useState(0)
   const [subtitleWord, setSubtitleWord] = useState(0)
   const socketRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -30,10 +48,11 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   const responseRef = useRef('')
   const audioFrameRef = useRef<number | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
 
   function stopAudioAnalysis() {
     if (audioFrameRef.current !== null) cancelAnimationFrame(audioFrameRef.current)
-    audioFrameRef.current = null; setMouth({ open: 0, wide: .35 })
+    audioFrameRef.current = null; setMouthOpen(0)
     audioContextRef.current?.close().catch(() => undefined); audioContextRef.current = null
   }
 
@@ -45,26 +64,13 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
     analyser.fftSize = 256; analyser.smoothingTimeConstant = 0.55
     source.connect(analyser); analyser.connect(context.destination)
     const samples = new Uint8Array(analyser.fftSize)
-    const spectrum = new Uint8Array(analyser.frequencyBinCount)
     const words = responseRef.current.trim().split(/\s+/).filter(Boolean)
     setSubtitleWord(0)
-    let open = 0, wide = .35
     const animate = () => {
       analyser.getByteTimeDomainData(samples)
       let energy = 0
       for (const sample of samples) { const centered = (sample - 128) / 128; energy += centered * centered }
-      const openTarget = Math.min(1, Math.sqrt(energy / samples.length) * 5.5)
-      // Fast attack, slower release keeps the lips snappy but not jittery.
-      open += (openTarget - open) * (openTarget > open ? .55 : .3)
-      // Spectral centroid separates bright vowels (ee → wide) from round ones (oh → narrow).
-      analyser.getByteFrequencyData(spectrum)
-      let total = 0, weighted = 0
-      for (let bin = 1; bin < 48; bin++) { total += spectrum[bin]; weighted += spectrum[bin] * bin }
-      if (total > 200) {
-        const wideTarget = Math.min(1, Math.max(0, (weighted / total - 5) / 14))
-        wide += (wideTarget - wide) * .25
-      }
-      setMouth({ open: Math.round(open * 100) / 100, wide: Math.round(wide * 100) / 100 })
+      setMouthOpen(Math.min(1, Math.sqrt(energy / samples.length) * 5.5))
       if (Number.isFinite(audio.duration) && audio.duration > 0 && words.length) {
         setSubtitleWord(Math.min(words.length - 1, Math.floor((audio.currentTime / audio.duration) * words.length)))
       }
@@ -78,9 +84,12 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
 
   useEffect(() => {
     const endpoint = API.replace(/^http/, 'ws') + '/api/talk/ws'
-    const socket = new WebSocket(endpoint); socketRef.current = socket
-    socket.onopen = () => { setState('idle'); setStatus('Ready when you are') }
-    socket.onmessage = event => {
+    let disposed = false; let attempts = 0; let retryTimer: number | undefined
+    const connect = () => {
+      if (disposed) return
+      const socket = new WebSocket(endpoint); socketRef.current = socket
+      socket.onopen = () => { attempts = 0; setError(''); setState('idle'); setStatus('Ready when you are') }
+      socket.onmessage = event => {
       const data = JSON.parse(event.data)
       if (data.type === 'state') {
         if (!(data.value === 'idle' && audioRef.current && !audioRef.current.paused)) setState(data.value)
@@ -92,15 +101,23 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
       if (data.type === 'text_complete') { setResponse(data.content); responseRef.current = data.content }
       if (data.type === 'animation_state') setStatus('Creating a visual explanation…')
       if (data.type === 'video_ready') setVideoUrl(API + data.url)
+      if (data.type === 'image_ready') setImageUrl(API + data.url)
       if (data.type === 'audio_ready') {
         playAgentAudio(data.url)
       }
       if (data.type === 'media_warning') setError(data.message)
       if (data.type === 'error') { setError(data.message); setState('error') }
+      }
+      socket.onerror = () => setError('Talk service connection was interrupted. Reconnecting…')
+      socket.onclose = () => {
+        if (disposed || socketRef.current !== socket) return
+        socketRef.current = null; setState('connecting')
+        const delay = Math.min(10_000, 500 * 2 ** attempts++); setStatus(`Reconnecting in ${Math.ceil(delay / 1000)}s…`)
+        retryTimer = window.setTimeout(connect, delay)
+      }
     }
-    socket.onerror = () => { setError('Cannot connect to the Talk service. Is the backend running?'); setState('error') }
-    socket.onclose = () => setState(value => value === 'error' ? value : 'connecting')
-    return () => { recorderRef.current?.stop(); audioRef.current?.pause(); stopAudioAnalysis(); socket.close() }
+    connect()
+    return () => { disposed = true; if (retryTimer) window.clearTimeout(retryTimer); recorderRef.current?.stop(); audioRef.current?.pause(); stopAudioAnalysis(); socketRef.current?.close(); socketRef.current = null }
   }, [])
 
   async function beginListening() {
@@ -124,18 +141,31 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   }
 
   function stopListening() { recorderRef.current?.stop(); recorderRef.current = null }
+  async function pickFiles(files: FileList | null) {
+    if (!files?.length || uploading) return
+    const selected = [...files]
+    if (attachments.length + selected.length > 10) { setError('You can attach up to 10 documents at a time.'); return }
+    if (selected.some(file => file.size > 25 * 1024 * 1024)) { setError('Each attachment must be 25 MB or smaller.'); return }
+    setUploading(true); setError('')
+    try {
+      const uploaded = await Promise.all(selected.map(api.upload))
+      setAttachments(current => [...current, ...uploaded]); setMode('document')
+    } catch (e) { setError((e as Error).message) }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
+  }
   function submitText(event: FormEvent) {
     event.preventDefault(); const content = text.trim(); if (!content || socketRef.current?.readyState !== WebSocket.OPEN) return
-    setText(''); setTranscript(content); setResponse(''); responseRef.current = ''; setError(''); setState('thinking')
-    socketRef.current.send(JSON.stringify({ type: 'text', content }))
+    const attachmentIds = attachments.map(item => item.id)
+    setText(''); setAttachments([]); setTranscript(content); setResponse(''); responseRef.current = ''; setError(''); setVideoUrl(''); setImageUrl(''); setState('thinking')
+    socketRef.current.send(JSON.stringify({ type: 'text', content, mode, attachment_ids: attachmentIds }))
   }
-  function reset() { setTranscript(''); setResponse(''); setVideoUrl(''); setError(''); socketRef.current?.send(JSON.stringify({ type: 'reset' })) }
+  function reset() { setTranscript(''); setResponse(''); setVideoUrl(''); setImageUrl(''); setAttachments([]); setError(''); socketRef.current?.send(JSON.stringify({ type: 'reset' })) }
 
   return <div className="talk-screen">
     <header className="talk-header"><button onClick={onHome}><ArrowLeft size={18}/> Home</button><div><Sparkles size={18}/><b>Talk with Gemma</b><span>Local voice companion</span></div><button onClick={reset}><RotateCcw size={16}/> Reset</button></header>
     <main className="talk-main">
       <section className="voice-stage">
-        <div className={`voice-orbit state-${state}`}><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="voice-core face-core"><AngelAvatar state={state} mouthOpen={mouth.open} mouthWide={mouth.wide}/></div></div>
+        <div className={`voice-orbit state-${state}`}><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="voice-core face-core"><GeometricAgentFace mouthOpen={mouthOpen} speaking={state === 'speaking'}/></div></div>
         <div className="state-label">{state}</div><h1>{status}</h1>
         {state === 'speaking' && response && <div className="live-subtitles" aria-live="polite">{response.split(/\s+/).slice(Math.max(0, subtitleWord - 5), subtitleWord + 7).map((word, index) => { const absolute = Math.max(0, subtitleWord - 5) + index; return <span key={`${absolute}-${word}`} className={absolute === subtitleWord ? 'current' : absolute < subtitleWord ? 'spoken' : ''}>{word} </span>})}</div>}
         <button className={`talk-button ${state === 'listening' ? 'recording' : ''}`} disabled={!['idle','listening','error'].includes(state)} onClick={state === 'listening' ? stopListening : beginListening}>{state === 'listening' ? <Square size={21}/> : <Mic size={23}/>}<span>{state === 'listening' ? 'Finish' : 'Talk'}</span></button>
@@ -143,9 +173,20 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
       <section className="talk-dialogue">
         {(transcript || response) && <div className="voice-conversation">{transcript && <div className="voice-turn user-turn"><small>YOU SAID</small><p>{transcript}</p></div>}{response && <div className="voice-turn agent-turn"><small>GEMMA</small><p><LinkedText text={response}/></p></div>}</div>}
         {videoUrl && <div className="visual-player"><div><Video size={16}/> Visual explanation</div><video src={videoUrl} controls autoPlay/></div>}
+        {imageUrl && <div className="talk-image"><div><Image size={16}/> Generated image</div><img src={imageUrl} alt="Generated by Gemma"/></div>}
         {error && <div className="talk-error">{error}</div>}
       </section>
     </main>
-    <form className="talk-text" onSubmit={submitText}><input value={text} onChange={e => setText(e.target.value)} placeholder="Or type something to Gemma…" disabled={state === 'thinking'}/><button disabled={!text.trim() || state === 'thinking'}><Send size={17}/></button></form>
+    <form className="talk-composer" onSubmit={submitText}>
+      {attachments.length > 0 && <div className="talk-attachments">{attachments.map(item => <span key={item.id}><FileText size={13}/>{item.name}<button type="button" aria-label={`Remove ${item.name}`} onClick={() => setAttachments(current => current.filter(x => x.id !== item.id))}><X size={12}/></button></span>)}</div>}
+      <textarea value={text} onChange={e => setText(e.target.value)} placeholder="Message Gemma…" rows={1} disabled={state === 'thinking'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}/>
+      <div className="talk-composer-actions">
+        <input ref={fileRef} hidden type="file" multiple accept=".pdf,.docx,.txt,.md,.py,.js,.ts,.json,.csv" onChange={e => pickFiles(e.target.files)}/>
+        <button type="button" className="talk-tool" title="Attach documents" aria-label="Attach documents" disabled={uploading || state === 'thinking'} onClick={() => fileRef.current?.click()}><Paperclip size={18}/></button>
+        <div className="talk-modes" role="group" aria-label="Response mode">{modes.map(item => <button type="button" key={item.id} className={mode === item.id ? 'selected' : ''} aria-pressed={mode === item.id} onClick={() => setMode(item.id)}><item.icon size={14}/><span>{item.label}</span></button>)}</div>
+        <span className="talk-grow"/><button className="talk-send" aria-label="Send message" disabled={!text.trim() || uploading || state === 'thinking' || state === 'connecting'}><Send size={17}/></button>
+      </div>
+      <small>{uploading ? 'Uploading securely to the local workspace…' : 'Gemma runs locally and can make mistakes. Verify important information.'}</small>
+    </form>
   </div>
 }

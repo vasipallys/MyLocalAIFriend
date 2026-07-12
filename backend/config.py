@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     document_max_chars: int = 24_000
     whisper_model: str = "base.en"
     whisper_compute_type: str = "int8"
-    tts_rate: int = 175
+    tts_rate: int = 170
+    tts_voice: str = "female"
     manim_executable: str = "manim"
     temperature: float = 0.2
 

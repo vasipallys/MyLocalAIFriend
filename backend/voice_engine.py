@@ -57,6 +57,22 @@ class VoiceEngine:
         engine = pyttsx3.init()
         engine.setProperty("rate", self.settings.tts_rate)
         engine.setProperty("volume", 1.0)
+        voices = list(engine.getProperty("voices") or [])
+        requested = self.settings.tts_voice.strip().lower()
+        female_markers = ("zira", "hazel", "heera", "susan", "female", "woman", "samantha")
+
+        def voice_score(voice) -> tuple[int, int]:
+            identity = f"{getattr(voice, 'name', '')} {getattr(voice, 'id', '')}".lower()
+            gender = str(getattr(voice, "gender", "")).lower()
+            explicit = int(bool(requested and requested != "female" and requested in identity))
+            feminine = int("female" in gender or any(marker in identity for marker in female_markers))
+            return explicit, feminine
+
+        if voices:
+            selected = max(voices, key=voice_score)
+            if voice_score(selected) == (0, 0) and len(voices) > 1:
+                selected = voices[1]
+            engine.setProperty("voice", selected.id)
         engine.save_to_file(text, str(destination))
         engine.runAndWait()
         engine.stop()
@@ -69,4 +85,3 @@ class VoiceEngine:
         async with self._tts_lock:
             await asyncio.to_thread(self._synthesize_sync, text, destination)
         return f"/generated/{name}"
-

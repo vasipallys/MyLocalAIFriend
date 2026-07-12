@@ -95,16 +95,20 @@ def rename(conversation_id: UUID, payload: RenameRequest):
             raise HTTPException(404, "Conversation not found")
         item.title = payload.title.strip()
         item.updated_at = now()
-        session.add(item); session.commit(); session.refresh(item)
+        session.add(item)
+        session.commit()
+        session.refresh(item)
         return item
 
 
 @app.delete("/api/conversations/{conversation_id}", status_code=204)
 def delete_conversation(conversation_id: UUID):
     with Session(engine) as session:
-        for item in list_messages(session, conversation_id): session.delete(item)
+        for item in list_messages(session, conversation_id):
+            session.delete(item)
         conversation = session.get(Conversation, conversation_id)
-        if conversation: session.delete(conversation)
+        if conversation:
+            session.delete(conversation)
         session.commit()
 
 
@@ -128,8 +132,13 @@ async def upload(file: UploadFile = File(...)):
 def attachment_data(ids: list[str]) -> tuple[list[dict], str]:
     attachments, contexts = [], []
     for upload_id in ids:
-        matches = list(settings.uploads_dir.glob(f"{upload_id}.*"))
-        if not matches: continue
+        try:
+            safe_id = str(UUID(str(upload_id)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        matches = list(settings.uploads_dir.glob(f"{safe_id}.*"))
+        if not matches:
+            continue
         path = matches[0]
         attachments.append({"id": upload_id, "name": path.name, "content_type": mimetypes.guess_type(path)[0] or "application/octet-stream", "size": path.stat().st_size})
         contexts.append(
@@ -149,7 +158,10 @@ async def chat(payload: ChatRequest):
             conversation_id = conversation.id
         attachments, context = attachment_data(payload.attachment_ids)
         user_message = Message(conversation_id=conversation_id, role="user", content=payload.message, attachments=attachments)
-        session.add(user_message); conversation.updated_at = now(); session.add(conversation); session.commit()
+        session.add(user_message)
+        conversation.updated_at = now()
+        session.add(conversation)
+        session.commit()
         prior = list_messages(session, conversation_id)[:-1]
     history = [AIMessage(content=x.content) if x.role == "assistant" else HumanMessage(content=x.content) for x in prior[-20:]]
 
@@ -182,7 +194,9 @@ async def chat(payload: ChatRequest):
                 yield f"data: {json.dumps({'type': 'token', 'content': answer})}\n\n"
             with Session(engine) as session:
                 saved = Message(conversation_id=conversation_id, role="assistant", content=answer, message_metadata={"mode": result.get("mode"), "artifact_url": result.get("artifact_url")})
-                session.add(saved); session.commit(); session.refresh(saved)
+                session.add(saved)
+                session.commit()
+                session.refresh(saved)
             yield f"data: {json.dumps({'type': 'done', 'message': message_dict(saved)})}\n\n"
         except Exception as exc:
             logging.exception("Chat failed")
@@ -201,7 +215,11 @@ async def talk_socket(websocket: WebSocket):
     async def send(event_type: str, **data):
         await websocket.send_json({"type": event_type, **data})
 
-    async def respond(transcript: str):
+    async def respond(
+        transcript: str,
+        mode: str = "chat",
+        attachment_ids: list[str] | None = None,
+    ):
         nonlocal history
         if not transcript.strip():
             await send("error", message="I could not hear any speech. Please try again.")
@@ -210,9 +228,22 @@ async def talk_socket(websocket: WebSocket):
         await send("transcript", content=transcript)
         await send("state", value="thinking")
         token_queue: asyncio.Queue[str] = asyncio.Queue()
-        generation = asyncio.create_task(
-            talk_agent.invoke(history, transcript, preferences, token_queue)
-        )
+        if mode == "talk":
+            generation = asyncio.create_task(
+                talk_agent.invoke(history, transcript, preferences, token_queue)
+            )
+        else:
+            if mode not in {"auto", "chat", "code", "research", "image", "document"}:
+                raise ValueError("Unsupported Talk mode")
+            requested_ids = attachment_ids or []
+            if len(requested_ids) > 10:
+                raise ValueError("Talk messages support up to 10 attachments")
+            attachments, context = attachment_data(requested_ids)
+            if len(attachments) != len(requested_ids):
+                raise ValueError("One or more selected attachments are no longer available")
+            generation = asyncio.create_task(
+                agent.invoke(history, transcript, mode, context, token_queue)
+            )
         while not generation.done() or not token_queue.empty():
             try:
                 token = await asyncio.wait_for(token_queue.get(), timeout=1)
@@ -220,14 +251,16 @@ async def talk_socket(websocket: WebSocket):
             except TimeoutError:
                 await send("heartbeat")
         result = await generation
-        response = result["response"]
+        response = result["response"] if mode == "talk" else str(result["messages"][-1].content)
         history = list(result["messages"])[-settings.model_context_messages:]
         await send("text_complete", content=response)
+        if result.get("artifact_url"):
+            await send("image_ready", url=result["artifact_url"])
         await send("state", value="speaking")
 
         tts_task = asyncio.create_task(voice_engine.synthesize(response))
         animation_task = None
-        if result["requires_animation"]:
+        if mode == "talk" and result["requires_animation"]:
             await send("animation_state", value="rendering")
             animation_task = asyncio.create_task(
                 animation_engine.render(transcript[:60], response)
@@ -261,7 +294,13 @@ async def talk_socket(websocket: WebSocket):
                 continue
             command = json.loads(raw)
             if command.get("type") == "text":
-                await respond(str(command.get("content", "")))
+                await respond(
+                    str(command.get("content", ""))[:100_000],
+                    str(command.get("mode", "auto")),
+                    command.get("attachment_ids")
+                    if isinstance(command.get("attachment_ids"), list)
+                    else [],
+                )
             elif command.get("type") == "commit":
                 if not audio_buffer:
                     await send("error", message="No microphone audio was received")
@@ -274,7 +313,7 @@ async def talk_socket(websocket: WebSocket):
                 await send("status", content="Transcribing locally with Whisper…")
                 try:
                     transcript = await voice_engine.transcribe(path)
-                    await respond(transcript)
+                    await respond(transcript, "talk")
                 finally:
                     path.unlink(missing_ok=True)
             elif command.get("type") == "reset":
