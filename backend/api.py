@@ -251,6 +251,8 @@ async def talk_socket(websocket: WebSocket):
         await send("state", value="idle")
         while True:
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
             if message.get("bytes") is not None:
                 audio_buffer.extend(message["bytes"])
                 continue
@@ -280,6 +282,11 @@ async def talk_socket(websocket: WebSocket):
                 await send("reset_complete")
     except WebSocketDisconnect:
         logger.info("Talk client disconnected")
+    except RuntimeError as exc:
+        if "disconnect message has been received" in str(exc):
+            logger.info("Talk client disconnected")
+            return
+        raise
     except Exception as exc:
         logger.exception("Talk session failed")
         try:

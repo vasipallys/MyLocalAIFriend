@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Mic, RotateCcw, Send, Sparkles, Square, Video } from 'lucide-react'
 import { API } from './api'
+import angelFriend from './assets/angel-friend.png'
 
 type AgentState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'error'
 
@@ -12,6 +13,14 @@ function LinkedText({ text }: { text: string }) {
   )}</>
 }
 
+function GeometricAgentFace({ mouthOpen, speaking }: { mouthOpen: number; speaking: boolean }) {
+  return <div className={`agent-portrait ${speaking ? 'portrait-speaking' : ''}`} role="img" aria-label="Gemma, your angelic voice companion">
+    <img src={angelFriend} alt="Gemma angelic companion" draggable={false}/>
+    <span className="portrait-mouth" style={{ transform: `translate(-50%,-50%) scale(${1 + mouthOpen * .12},${.18 + mouthOpen * 1.3})`, opacity: .2 + mouthOpen * .75 }}/>
+    <span className="portrait-halo"/>
+  </div>
+}
+
 export function TalkScreen({ onHome }: { onHome: () => void }) {
   const [state, setState] = useState<AgentState>('connecting')
   const [transcript, setTranscript] = useState('')
@@ -20,10 +29,47 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   const [error, setError] = useState('')
   const [videoUrl, setVideoUrl] = useState('')
   const [text, setText] = useState('')
+  const [mouthOpen, setMouthOpen] = useState(0)
+  const [subtitleWord, setSubtitleWord] = useState(0)
   const socketRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const responseRef = useRef('')
+  const audioFrameRef = useRef<number | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+
+  function stopAudioAnalysis() {
+    if (audioFrameRef.current !== null) cancelAnimationFrame(audioFrameRef.current)
+    audioFrameRef.current = null; setMouthOpen(0)
+    audioContextRef.current?.close().catch(() => undefined); audioContextRef.current = null
+  }
+
+  function playAgentAudio(url: string) {
+    stopAudioAnalysis()
+    const audio = new Audio(API + url); audio.crossOrigin = 'anonymous'; audioRef.current = audio
+    const context = new AudioContext(); audioContextRef.current = context
+    const source = context.createMediaElementSource(audio); const analyser = context.createAnalyser()
+    analyser.fftSize = 256; analyser.smoothingTimeConstant = 0.55
+    source.connect(analyser); analyser.connect(context.destination)
+    const samples = new Uint8Array(analyser.fftSize)
+    const words = responseRef.current.trim().split(/\s+/).filter(Boolean)
+    setSubtitleWord(0)
+    const animate = () => {
+      analyser.getByteTimeDomainData(samples)
+      let energy = 0
+      for (const sample of samples) { const centered = (sample - 128) / 128; energy += centered * centered }
+      setMouthOpen(Math.min(1, Math.sqrt(energy / samples.length) * 5.5))
+      if (Number.isFinite(audio.duration) && audio.duration > 0 && words.length) {
+        setSubtitleWord(Math.min(words.length - 1, Math.floor((audio.currentTime / audio.duration) * words.length)))
+      }
+      if (!audio.paused && !audio.ended) audioFrameRef.current = requestAnimationFrame(animate)
+    }
+    audio.onplay = () => { setState('speaking'); audioFrameRef.current = requestAnimationFrame(animate) }
+    audio.onended = () => { stopAudioAnalysis(); setSubtitleWord(words.length); setState('idle'); setStatus('Ready when you are') }
+    audio.onerror = () => { stopAudioAnalysis(); setError('The generated voice audio could not be played.') }
+    context.resume().then(() => audio.play()).catch(e => setError(`Audio playback failed: ${e.message}`))
+  }
 
   useEffect(() => {
     const endpoint = API.replace(/^http/, 'ws') + '/api/talk/ws'
@@ -36,23 +82,20 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
         if (data.value === 'thinking') setStatus('Gemma is thinking locally…')
       }
       if (data.type === 'status') setStatus(data.content)
-      if (data.type === 'transcript') { setTranscript(data.content); setResponse('') }
-      if (data.type === 'token') setResponse(value => value + data.content)
-      if (data.type === 'text_complete') setResponse(data.content)
+      if (data.type === 'transcript') { setTranscript(data.content); setResponse(''); responseRef.current = '' }
+      if (data.type === 'token') setResponse(value => { const next = value + data.content; responseRef.current = next; return next })
+      if (data.type === 'text_complete') { setResponse(data.content); responseRef.current = data.content }
       if (data.type === 'animation_state') setStatus('Creating a visual explanation…')
       if (data.type === 'video_ready') setVideoUrl(API + data.url)
       if (data.type === 'audio_ready') {
-        const audio = new Audio(API + data.url); audioRef.current = audio; setState('speaking')
-        audio.onended = () => { setState('idle'); setStatus('Ready when you are') }
-        audio.onerror = () => setError('The generated voice audio could not be played.')
-        audio.play().catch(e => setError(`Audio playback failed: ${e.message}`))
+        playAgentAudio(data.url)
       }
       if (data.type === 'media_warning') setError(data.message)
       if (data.type === 'error') { setError(data.message); setState('error') }
     }
     socket.onerror = () => { setError('Cannot connect to the Talk service. Is the backend running?'); setState('error') }
     socket.onclose = () => setState(value => value === 'error' ? value : 'connecting')
-    return () => { recorderRef.current?.stop(); audioRef.current?.pause(); socket.close() }
+    return () => { recorderRef.current?.stop(); audioRef.current?.pause(); stopAudioAnalysis(); socket.close() }
   }, [])
 
   async function beginListening() {
@@ -78,7 +121,7 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   function stopListening() { recorderRef.current?.stop(); recorderRef.current = null }
   function submitText(event: FormEvent) {
     event.preventDefault(); const content = text.trim(); if (!content || socketRef.current?.readyState !== WebSocket.OPEN) return
-    setText(''); setTranscript(content); setResponse(''); setError(''); setState('thinking')
+    setText(''); setTranscript(content); setResponse(''); responseRef.current = ''; setError(''); setState('thinking')
     socketRef.current.send(JSON.stringify({ type: 'text', content }))
   }
   function reset() { setTranscript(''); setResponse(''); setVideoUrl(''); setError(''); socketRef.current?.send(JSON.stringify({ type: 'reset' })) }
@@ -87,8 +130,9 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
     <header className="talk-header"><button onClick={onHome}><ArrowLeft size={18}/> Home</button><div><Sparkles size={18}/><b>Talk with Gemma</b><span>Local voice companion</span></div><button onClick={reset}><RotateCcw size={16}/> Reset</button></header>
     <main className="talk-main">
       <section className="voice-stage">
-        <div className={`voice-orbit state-${state}`}><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="voice-core"><Sparkles size={42}/></div>{state === 'speaking' && <div className="sound-bars">{[1,2,3,4,5].map(x => <i key={x}/>)}</div>}</div>
+        <div className={`voice-orbit state-${state}`}><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="voice-core face-core"><GeometricAgentFace mouthOpen={mouthOpen} speaking={state === 'speaking'}/></div></div>
         <div className="state-label">{state}</div><h1>{status}</h1>
+        {state === 'speaking' && response && <div className="live-subtitles" aria-live="polite">{response.split(/\s+/).slice(Math.max(0, subtitleWord - 5), subtitleWord + 7).map((word, index) => { const absolute = Math.max(0, subtitleWord - 5) + index; return <span key={`${absolute}-${word}`} className={absolute === subtitleWord ? 'current' : absolute < subtitleWord ? 'spoken' : ''}>{word} </span>})}</div>}
         <button className={`talk-button ${state === 'listening' ? 'recording' : ''}`} disabled={!['idle','listening','error'].includes(state)} onClick={state === 'listening' ? stopListening : beginListening}>{state === 'listening' ? <Square size={21}/> : <Mic size={23}/>}<span>{state === 'listening' ? 'Finish' : 'Talk'}</span></button>
       </section>
       <section className="talk-dialogue">
