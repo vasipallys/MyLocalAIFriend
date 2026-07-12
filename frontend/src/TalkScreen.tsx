@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Mic, RotateCcw, Send, Sparkles, Square, Video } from 'lucide-react'
 import { API } from './api'
-import angelFriend from './assets/angel-friend.png'
+import { AngelAvatar } from './AngelAvatar'
 
 type AgentState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'error'
 
@@ -13,14 +13,6 @@ function LinkedText({ text }: { text: string }) {
   )}</>
 }
 
-function GeometricAgentFace({ mouthOpen, speaking }: { mouthOpen: number; speaking: boolean }) {
-  return <div className={`agent-portrait ${speaking ? 'portrait-speaking' : ''}`} role="img" aria-label="Gemma, your angelic voice companion">
-    <img src={angelFriend} alt="Gemma angelic companion" draggable={false}/>
-    <span className="portrait-mouth" style={{ transform: `translate(-50%,-50%) scale(${1 + mouthOpen * .12},${.18 + mouthOpen * 1.3})`, opacity: .2 + mouthOpen * .75 }}/>
-    <span className="portrait-halo"/>
-  </div>
-}
-
 export function TalkScreen({ onHome }: { onHome: () => void }) {
   const [state, setState] = useState<AgentState>('connecting')
   const [transcript, setTranscript] = useState('')
@@ -29,7 +21,7 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
   const [error, setError] = useState('')
   const [videoUrl, setVideoUrl] = useState('')
   const [text, setText] = useState('')
-  const [mouthOpen, setMouthOpen] = useState(0)
+  const [mouth, setMouth] = useState({ open: 0, wide: .35 })
   const [subtitleWord, setSubtitleWord] = useState(0)
   const socketRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -41,7 +33,7 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
 
   function stopAudioAnalysis() {
     if (audioFrameRef.current !== null) cancelAnimationFrame(audioFrameRef.current)
-    audioFrameRef.current = null; setMouthOpen(0)
+    audioFrameRef.current = null; setMouth({ open: 0, wide: .35 })
     audioContextRef.current?.close().catch(() => undefined); audioContextRef.current = null
   }
 
@@ -53,13 +45,26 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
     analyser.fftSize = 256; analyser.smoothingTimeConstant = 0.55
     source.connect(analyser); analyser.connect(context.destination)
     const samples = new Uint8Array(analyser.fftSize)
+    const spectrum = new Uint8Array(analyser.frequencyBinCount)
     const words = responseRef.current.trim().split(/\s+/).filter(Boolean)
     setSubtitleWord(0)
+    let open = 0, wide = .35
     const animate = () => {
       analyser.getByteTimeDomainData(samples)
       let energy = 0
       for (const sample of samples) { const centered = (sample - 128) / 128; energy += centered * centered }
-      setMouthOpen(Math.min(1, Math.sqrt(energy / samples.length) * 5.5))
+      const openTarget = Math.min(1, Math.sqrt(energy / samples.length) * 5.5)
+      // Fast attack, slower release keeps the lips snappy but not jittery.
+      open += (openTarget - open) * (openTarget > open ? .55 : .3)
+      // Spectral centroid separates bright vowels (ee → wide) from round ones (oh → narrow).
+      analyser.getByteFrequencyData(spectrum)
+      let total = 0, weighted = 0
+      for (let bin = 1; bin < 48; bin++) { total += spectrum[bin]; weighted += spectrum[bin] * bin }
+      if (total > 200) {
+        const wideTarget = Math.min(1, Math.max(0, (weighted / total - 5) / 14))
+        wide += (wideTarget - wide) * .25
+      }
+      setMouth({ open: Math.round(open * 100) / 100, wide: Math.round(wide * 100) / 100 })
       if (Number.isFinite(audio.duration) && audio.duration > 0 && words.length) {
         setSubtitleWord(Math.min(words.length - 1, Math.floor((audio.currentTime / audio.duration) * words.length)))
       }
@@ -130,7 +135,7 @@ export function TalkScreen({ onHome }: { onHome: () => void }) {
     <header className="talk-header"><button onClick={onHome}><ArrowLeft size={18}/> Home</button><div><Sparkles size={18}/><b>Talk with Gemma</b><span>Local voice companion</span></div><button onClick={reset}><RotateCcw size={16}/> Reset</button></header>
     <main className="talk-main">
       <section className="voice-stage">
-        <div className={`voice-orbit state-${state}`}><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="voice-core face-core"><GeometricAgentFace mouthOpen={mouthOpen} speaking={state === 'speaking'}/></div></div>
+        <div className={`voice-orbit state-${state}`}><div className="orbit-ring ring-one"/><div className="orbit-ring ring-two"/><div className="voice-core face-core"><AngelAvatar state={state} mouthOpen={mouth.open} mouthWide={mouth.wide}/></div></div>
         <div className="state-label">{state}</div><h1>{status}</h1>
         {state === 'speaking' && response && <div className="live-subtitles" aria-live="polite">{response.split(/\s+/).slice(Math.max(0, subtitleWord - 5), subtitleWord + 7).map((word, index) => { const absolute = Math.max(0, subtitleWord - 5) + index; return <span key={`${absolute}-${word}`} className={absolute === subtitleWord ? 'current' : absolute < subtitleWord ? 'spoken' : ''}>{word} </span>})}</div>}
         <button className={`talk-button ${state === 'listening' ? 'recording' : ''}`} disabled={!['idle','listening','error'].includes(state)} onClick={state === 'listening' ? stopListening : beginListening}>{state === 'listening' ? <Square size={21}/> : <Mic size={23}/>}<span>{state === 'listening' ? 'Finish' : 'Talk'}</span></button>
