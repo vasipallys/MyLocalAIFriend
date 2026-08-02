@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import re
 import socket
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -11,6 +12,12 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
 from backend.config import Settings
+
+
+_image_pipeline = None
+_image_pipeline_model: str | None = None
+_image_pipeline_lock = threading.Lock()
+_image_generation_lock = asyncio.Lock()
 
 
 def extract_document(path: Path, max_chars: int = 80_000) -> str:
@@ -98,20 +105,37 @@ async def generate_image(prompt: str, settings: Settings) -> str:
         raise RuntimeError("Image generation is disabled. Set IMAGE_MODEL_ID in .env.")
 
     def run() -> str:
+        global _image_pipeline, _image_pipeline_model
+
         import torch
         from diffusers import AutoPipelineForText2Image
 
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        pipe = AutoPipelineForText2Image.from_pretrained(
-            settings.image_model_id, torch_dtype=dtype
-        )
-        pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-        image = pipe(prompt=prompt, num_inference_steps=28).images[0]
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        with _image_pipeline_lock:
+            if _image_pipeline is None or _image_pipeline_model != settings.image_model_id:
+                pipe = AutoPipelineForText2Image.from_pretrained(
+                    settings.image_model_id, torch_dtype=dtype
+                )
+                pipe = pipe.to(device)
+                if device == "cpu":
+                    pipe.enable_attention_slicing()
+                pipe.set_progress_bar_config(disable=True)
+                _image_pipeline = pipe
+                _image_pipeline_model = settings.image_model_id
+            pipe = _image_pipeline
+        image = pipe(
+            prompt=prompt,
+            num_inference_steps=max(1, min(settings.image_inference_steps, 50)),
+        ).images[0]
         name = f"{uuid4()}.png"
         image.save(settings.generated_dir / name)
         return f"/generated/{name}"
 
-    return await asyncio.to_thread(run)
+    # Diffusers pipelines are not safe to invoke concurrently. Serialization also
+    # prevents two CPU generations from exhausting system memory.
+    async with _image_generation_lock:
+        return await asyncio.to_thread(run)
 
 
 def research_context(results: list[dict]) -> str:

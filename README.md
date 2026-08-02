@@ -19,7 +19,7 @@ The default configuration is deliberately tuned for a CPU laptop. The language m
 - Roughly 6 GB free disk for Python packages, model cache, and app data
 - A Hugging Face account with the Gemma license accepted
 
-CPU generation is functional but not instant. A typical modern laptop may produce a few tokens per second. Tokens are displayed as soon as the model produces them. `MAX_NEW_TOKENS=1024` permits longer answers; reduce it if lower latency matters more than response length. Image diffusion is disabled by default because it is usually too slow and memory-heavy without a GPU.
+CPU generation is functional but not instant. A typical modern laptop may produce a few tokens per second. Tokens are displayed as soon as the model produces them. `MAX_NEW_TOKENS=1024` permits longer answers; reduce it if lower latency matters more than response length. The default Tiny-SD image model also runs locally on CPU; its first request downloads about 1 GB and may take several minutes.
 
 ## Quick start on Windows
 
@@ -93,7 +93,7 @@ CPU_THREADS=0
 - **Chat and code:** local Gemma inference with production-oriented prompting.
 - **Documents:** PDF, DOCX, text, Markdown, source code, JSON, and CSV up to 25 MB. Extracted text is capped before prompting to keep CPU inference manageable.
 - **Research:** API-key-free pipeline using DDGS for discovery, HTTPX for concurrent retrieval, and BeautifulSoup for local content extraction. Research is the only agent mode that deliberately accesses the public web.
-- **Images:** optional local Diffusers pipeline. Install with `pip install -e ".[image]"` and set `IMAGE_MODEL_ID`; a GPU is strongly recommended.
+- **Images:** local Diffusers pipeline using `segmind/tiny-sd` by default. The pipeline is cached after first use and image requests are serialized to control memory usage. Adjust `IMAGE_INFERENCE_STEPS` for the desired speed/quality tradeoff.
 - **Observability:** traces FastAPI requests, LangGraph/LangChain nodes, HTTP calls, tools, and local Gemma generation to a local Phoenix collector. Start it with `scripts\start-phoenix.ps1`; the application continues normally if it is absent.
 
 ## Architecture

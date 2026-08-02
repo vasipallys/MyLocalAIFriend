@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import re
-from pathlib import Path
 from uuid import uuid4
 
 from backend.config import Settings
@@ -88,4 +87,3 @@ class AgentExplanation(Scene):
         matches[0].replace(destination)
         script.unlink(missing_ok=True)
         return f"/generated/{output_name}"
-

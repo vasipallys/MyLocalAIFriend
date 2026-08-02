@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     temperature: float = 0.2
 
     image_model_id: str | None = None
+    image_inference_steps: int = 8
     phoenix_enabled: bool = True
     phoenix_collector_endpoint: str = "http://127.0.0.1:6006/v1/traces"
 

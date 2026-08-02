@@ -10,6 +10,16 @@ const modes: { id: Mode; label: string; icon: typeof Bot }[] = [
   { id: 'image', label: 'Image', icon: Image }, { id: 'document', label: 'Document', icon: FileText },
 ]
 
+function renderMarkdown(content: string): string {
+  // Generated files are served by FastAPI, not the Vite/Electron frontend origin.
+  // Rewriting here also fixes images loaded later from persisted conversation history.
+  const withBackendAssets = content.replace(
+    /\]\((\/generated\/[^)\s]+)\)/g,
+    (_match, path: string) => `](${new URL(path, API).toString()})`,
+  )
+  return marked.parse(withBackendAssets) as string
+}
+
 export function App({ onHome }: { onHome?: () => void }) {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeId, setActiveId] = useState<string>()
@@ -46,8 +56,9 @@ export function App({ onHome }: { onHome?: () => void }) {
         if (event.type === 'start' && !activeId) setActiveId(event.conversation_id)
         if (event.type === 'status' && !receivedToken) setMessages(x => x.map(m => m.id === assistant.id ? { ...m, content: `_${event.content}_` } : m))
         if (event.type === 'token') {
-          setMessages(x => x.map(m => m.id === assistant.id ? { ...m, content: (receivedToken ? m.content : '') + event.content } : m))
+          const firstToken = !receivedToken
           receivedToken = true
+          setMessages(x => x.map(m => m.id === assistant.id ? { ...m, content: (firstToken ? '' : m.content) + event.content } : m))
         }
         if (event.type === 'error') {
           setMessages(x => x.map(m => m.id === assistant.id ? { ...m, content: `Generation failed: ${event.message}` } : m))
@@ -81,7 +92,7 @@ export function App({ onHome }: { onHome?: () => void }) {
           <div className="avatar">{message.role === 'user' ? 'You' : <Sparkles size={17}/>}</div><div className="message-body">
             <div className="message-name">{message.role === 'user' ? 'You' : 'Gemma'}</div>
             {message.attachments?.map(a => <div className="file-chip" key={a.id}><FileText size={15}/>{a.name}</div>)}
-            <div className="markdown" dangerouslySetInnerHTML={{ __html: marked.parse(message.content || (sending ? 'Thinking…' : '')) as string }} />
+            <div className="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content || (sending ? 'Thinking…' : '')) }} />
           </div></article>)}<div ref={endRef}/></div>}
       </section>
       <footer>{error && <div className="error"><span>{error}</span><button onClick={() => setError('')}><X size={14}/></button></div>}
